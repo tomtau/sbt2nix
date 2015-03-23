@@ -29,20 +29,23 @@ object NixPlugin extends Plugin {
       for {
         ref <- structure.allProjectRefs
         project <- Project.getProject(ref, structure).toSeq
-        config <- Seq(Compile)
       } yield {
         // TODO Remove this!
         val bd = baseDirectory(ref, state).getOrElse(???)
+
         val projs = project.dependencies.collect {
-          case dependency if isInConfiguration(config, ref, dependency, state) =>
+          case dependency =>
             for {
+              config <- Seq(Compile, Test) if isInConfiguration(config, ref, dependency, state, config.name)
               name <- Keys.name.in(dependency.project).get(structure.data).orElse(Some(dependency.project.project))
               base <- Keys.baseDirectory.in(dependency.project).get(structure.data)
             } yield (name, FileUtils.relativize(bd, base))
         }.flatten
 
-        val deps = externalDependencies(ref, state)(config)
+        val deps = externalDependencies(ref, state)(Compile)
+        val testDeps = externalDependencies(ref, state)(Test)
         deps.foreach(alldeps += _)
+        testDeps.foreach(alldeps += _)
         val name = setting(Keys.name in ref, state).getOrElse("Unknown")
         // TODO Use \/
         val version = setting(Keys.version in ref, state).getOrElse("1.0-SNAPSHOT")
@@ -56,14 +59,16 @@ object NixPlugin extends Plugin {
 
         val s = if (project.aggregate.isEmpty) {
           // Nix can only handle source directories that exist
-          val src = setting(Keys.unmanagedSourceDirectories in (ref, config), state).getOrElse(Nil)
+          val src = (setting(Keys.unmanagedSourceDirectories in (ref, Compile), state).getOrElse(Nil)
+            ++ setting(Keys.unmanagedSourceDirectories in (ref, Test), state).getOrElse(Nil))
             .filter(_.exists()).map(FileUtils.relativize(bd, _).getPath)
+
           // TODO We need to handle test files + dependencies as well
           // Is there a way not to have to inherit sbt manually here?
           val scalacOpts = evaluateTask(Keys.scalacOptions, ref, state).mkString(" ")
 
           s"""{ sbt ? import $depsPath/sbt.nix { jdk = (import <nixpkgs> {}).$javacV ;}, deps ? import $depsPath/deps.nix { inherit sbt; }
-            |${deps.map(x => ", " + toName(x.artifact) + " ? " + "deps." + toName(x.artifact)).mkString("")} }:
+            |${alldeps.map(x => ", " + toName(x.artifact) + " ? " + "deps." + toName(x.artifact)).mkString("")} }:
             |let
             |${projs.map(x => proj(x._1, x._2)).mkString("\n")}
             |
@@ -76,6 +81,9 @@ object NixPlugin extends Plugin {
             |  scalacOptions = "$scalacOpts";
             |  buildDepends = [
             |    ${deps.map(x => toName(x.artifact)).mkString(" ")}
+            |  ];
+            |  testDepends = [
+            |    ${testDeps.map(x => toName(x.artifact)).mkString(" ")}
             |  ];
             |  meta = {
             |    ${desc.map(d => "description = " + "\"" + d + "\";").getOrElse("")}
@@ -158,15 +166,16 @@ object NixPlugin extends Plugin {
   def baseDirectory(ref: Reference, state: State): Validation[File] =
     setting(Keys.baseDirectory in ref, state)
 
+  // TODO: use configuration filter?
   def isInConfiguration(configuration: Configuration,
     ref: ProjectRef,
     dependency: ClasspathDep[ProjectRef],
-    state: State): Boolean = {
+    state: State, configOption: String): Boolean = {
     Classpaths.mapped(
       dependency.configuration,
       Configurations.names(Classpaths.getConfigurations(ref, structure(state).data)),
       Configurations.names(Classpaths.getConfigurations(dependency.project, structure(state).data)),
-      "compile", "*->compile"
+      configOption, "*->" + configOption
     )(configuration.name).nonEmpty
   }
 

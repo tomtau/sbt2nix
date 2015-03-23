@@ -28,10 +28,15 @@ let
       sources ? [],
       modules ? [],
       buildDepends ? [],
+      testDepends ? [],
       ...
     }: stdenv.mkDerivation(args // {
     name = "${pname}";
     nativeBuildInputs = [ jdk scala ];
+    # TODO test script
+    checkPhase = ''
+
+    '';
     buildInputs = buildDepends ++ modules;
     # TODO Don't call javac if there are no java files
     buildPhase = ''
